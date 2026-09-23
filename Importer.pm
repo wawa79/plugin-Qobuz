@@ -285,6 +285,12 @@ sub scanPlaylists {
 
 					next unless $album && ref $album eq 'HASH';
 
+					# Qobuz may return genre as a hash,
+					# whereas _prepareTrack() expects the genre name.
+					if (ref($album->{genre}) eq 'HASH') {
+						$album->{genre} = $album->{genre}->{name};
+					}
+
 					# playlist/get may return album images as an image hash,
 					# whereas _prepareTrack() expects the final image URL.
 					if ($album->{image} && ref $album->{image} eq 'HASH') {

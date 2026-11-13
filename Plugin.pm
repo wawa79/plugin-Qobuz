@@ -2,6 +2,7 @@ package Plugins::Qobuz::Plugin;
 
 use strict;
 use base qw(Slim::Plugin::OPMLBased);
+use utf8;
 
 use JSON::XS qw(decode_json encode_json);
 use Tie::RegexpHash;
@@ -17,6 +18,8 @@ use Scalar::Util qw(looks_like_number);
 use Plugins::Qobuz::API;
 use Plugins::Qobuz::API::Common;
 use Plugins::Qobuz::ProtocolHandler;
+
+use Plugins::DPLLauncher::QobuzDiscovery;
 
 use constant CAN_IMPORTER => (Slim::Utils::Versions->compareVersions($::VERSION, '8.0.0') >= 0);
 use constant CAN_LMS_CAN_WEBLINK => (Slim::Utils::Versions->compareVersions($::VERSION, '9.0.0') >= 0 && Slim::Utils::Misc->can('canFollowWeblinks') ? 1 : 0);
@@ -145,6 +148,8 @@ sub initPlugin {
 	Slim::Control::Request::addDispatch(['qobuz', 'addalbum'], [1, 0, 0, \&cliQobuzPlayAlbum]);
 	Slim::Control::Request::addDispatch(['qobuz','recentsearches'],[1, 0, 1, \&_recentSearchesCLI]);
 
+	Slim::Control::Request::addDispatch(['qobuz', 'discovery'], [1, 1, 1, \&_discoveryCLI]);
+
 	# "Local Artwork" requires LMS 7.8+, as it's using its imageproxy.
 	if (CAN_IMAGEPROXY) {
 		require Slim::Web::ImageProxy;
@@ -231,103 +236,121 @@ sub getDisplayName { 'PLUGIN_QOBUZ' }
 sub playerMenu {}
 
 sub handleFeed {
-	my ($client, $cb, $args) = @_;
+    my ($client, $cb, $args) = @_;
 
-	if ( !Plugins::Qobuz::API::Common->hasAccount() ) {
-		return $cb->({
-			items => [{
-				name => cstring($client, 'PLUGIN_QOBUZ_REQUIRES_CREDENTIALS'),
-				type => 'textarea',
-			}]
-		});
-	}
+	my $activeUser = $args->{params}->{active_user};
+
+    if ( !Plugins::Qobuz::API::Common->hasAccount() ) {
+        return $cb->({
+            items => [{
+                name => cstring($client, 'PLUGIN_QOBUZ_REQUIRES_CREDENTIALS'),
+                type => 'textarea',
+            }]
+        });
+    }
 
 	if ($args->{params} && (my $menu = $args->{params}->{menu})) {
-		if ($menu eq 'home_heroes_home') {
+        if ($menu eq 'home_heroes_home') {
 			return getHome( $client, $cb );
-		}
-		elsif ($menu =~ /^home_heroes_(best-sellers|press-awards|editor-picks|new-releases-full)$/) {
+        }
+        elsif ($menu =~ /^home_heroes_(best-sellers|press-awards|editor-picks|new-releases-full)$/) {
 			return QobuzFeaturedAlbums( $client, $cb, undef, {
-				type => $1,
+                type => $1,
 			} );
-		}
-		elsif ($menu eq 'home_heroes_weeklyq') {
+        }
+        elsif ($menu eq 'home_heroes_weeklyq') {
 			return QobuzMyWeeklyQ( $client, $cb );
-		}
-	}
+        }
+    }
 
 	my $params = $args->{params};
 
-	my $items = [{
-		name  => cstring($client, 'SEARCH'),
-		image => 'html/images/search.png',
+    my $items = [{
+        name  => cstring($client, 'SEARCH'),
+        image => 'html/images/search.png',
 		type => 'link',
 		url  => sub {
-			my ($client, $cb, $params) = @_;
-			my $items = [];
+            my ($client, $cb, $params) = @_;
+            my $items = [];
 
-			my $i = 0;
+            my $i = 0;
 			for my $recent ( @{ $prefs->get('qobuz_recent_search') || [] } ) {
-				unshift @$items, {
-					name  => $recent,
-					type  => 'link',
+                unshift @$items, {
+                    name  => $recent,
+                    type  => 'link',
 					url  => sub {
-						my ($client, $cb, $params) = @_;
-						my $menu = searchMenu($client, {
-							search => lc($recent)
-						});
-						$cb->({
-							items => $menu->{items}
-						});
-					},
-					itemActions => {
-						info => {
-							command     => ['qobuz', 'recentsearches'],
-							fixedParams => { deleteMenu => $i++ },
-						},
-					},
+                        my ($client, $cb, $params) = @_;
+                        my $menu = searchMenu($client, {
+                            search => lc($recent)
+                        });
+                        $cb->({
+                            items => $menu->{items}
+                        });
+                    },
+                    itemActions => {
+                        info => {
+                            command     => ['qobuz', 'recentsearches'],
+                            fixedParams => { deleteMenu => $i++ },
+                        },
+                    },
 					passthrough => [ { type => 'search' } ],
-				};
-			}
+                };
+            }
 
-			unshift @$items, {
-				name  => cstring($client, 'PLUGIN_QOBUZ_NEW_SEARCH'),
-				type  => 'search',
+            unshift @$items, {
+                name  => cstring($client, 'PLUGIN_QOBUZ_NEW_SEARCH'),
+                type  => 'search',
 				url  => sub {
-					my ($client, $cb, $params) = @_;
-					addRecentSearch($params->{search});
-					my $menu = searchMenu($client, {
-						search => lc($params->{search})
-					});
-					$cb->({
-						items => $menu->{items}
-					});
-				},
+                    my ($client, $cb, $params) = @_;
+                    addRecentSearch($params->{search});
+                    my $menu = searchMenu($client, {
+                        search => lc($params->{search})
+                    });
+                    $cb->({
+                        items => $menu->{items}
+                    });
+                },
 				passthrough => [ { type => 'search' } ],
-			};
+            };
 
-			$cb->({ items => $items });
-		},
-	},{
+            $cb->({ items => $items });
+        },
+    },{
 		name => cstring($client, 'PLUGIN_QOBUZ_USERPURCHASES'),
 		url  => \&QobuzUserPurchases,
-		image => 'html/images/albums.png'
-	},{
+        image => 'html/images/albums.png'
+    },{
 		name => cstring($client, 'PLUGIN_QOBUZ_USER_FAVORITES'),
 		url  => \&QobuzUserFavorites,
-		image => 'html/images/favorites.png'
-	},{
+        image => 'html/images/favorites.png'
+    },{
 		name => cstring($client, 'PLUGIN_QOBUZ_USERPLAYLISTS'),
 		url  => \&QobuzUserPlaylists,
-		image => 'html/images/playlists.png'
-	},{
-		name => cstring($client, 'PLUGIN_QOBUZ_PUBLICPLAYLISTS'),
-		url  => \&QobuzPublicPlaylists,
 		image => 'html/images/playlists.png',
 		passthrough => [{
-			type    => 'editor-picks',
-		}]
+			active_user => $activeUser
+		}],
 	},{
+        name =>
+			cstring($client, 'PLUGIN_QOBUZ_PUBLICPLAYLISTS') .
+            (Plugins::DPLLauncher::QobuzDiscovery::enabled($client)
+                ? ' [mode découverte]'
+                : ' [mode normal]'),
+		url => \&QobuzPublicPlaylists,
+		image => 'html/images/playlists.png',
+		itemActions => {
+			info => {
+				command => [ 'qobuz', 'discovery' ],
+				fixedParams => {
+					discoveryMenu => 1,
+				},
+			},
+		},
+		passthrough => [{
+			type => 'editor-picks',
+			active_user => $activeUser
+		}],
+    },{
 	# 	name => cstring($client, 'PLUGIN_QOBUZ_LATESTPLAYLISTS'),
 	# 	url  => \&QobuzPublicPlaylists,
 	# 	image => 'html/images/playlists.png',
@@ -337,47 +360,52 @@ sub handleFeed {
 	# },{
 		name => cstring($client, 'PLUGIN_QOBUZ_BESTSELLERS'),
 		url  => \&QobuzFeaturedAlbums,
-		image => 'html/images/albums.png',
-		passthrough => [{
+        image => 'html/images/albums.png',
+        passthrough => [{
 			type    => 'best-sellers',
-		}]
-	},{
+        }]
+    },{
 		name => cstring($client, 'PLUGIN_QOBUZ_NEW_RELEASES'),
 		url  => \&QobuzFeaturedAlbums,
-		image => 'html/images/albums.png',
-		passthrough => [{
+        image => 'html/images/albums.png',
+        passthrough => [{
 			type    => 'new-releases-full',
-		}]
-	},{
+        }]
+    },{
 		name => cstring($client, 'PLUGIN_QOBUZ_PRESS'),
 		url  => \&QobuzFeaturedAlbums,
-		image => 'html/images/albums.png',
-		passthrough => [{
+        image => 'html/images/albums.png',
+        passthrough => [{
 			type    => 'press-awards',
-		}]
-	},{
+        }]
+    },{
 		name => cstring($client, 'PLUGIN_QOBUZ_EDITOR_PICKS'),
 		url  => \&QobuzFeaturedAlbums,
-		image => 'html/images/albums.png',
-		passthrough => [{
+        image => 'html/images/albums.png',
+        passthrough => [{
 			type    => 'editor-picks',
-		}]
-	},{
-		name  => cstring($client, 'GENRES'),
-		image => 'html/images/genres.png',
+        }]
+    },{
+        name  => cstring($client, 'GENRES'),
+        image => 'html/images/genres.png',
 		type => 'link',
 		url  => \&QobuzGenres
-	}];
+#	},{
+#		name => cstring($client, 'PLUGIN_QOBUZ_MYWEEKLYQ'),
+#		type  => 'playlist',
+#		url  => \&QobuzMyWeeklyQ,
+#		image => 'html/images/playlists.png'
+    }];
 
-	if ($client && scalar @{ Plugins::Qobuz::API::Common::getAccountList() } > 1) {
-		push @$items, {
+    if ($client && scalar @{ Plugins::Qobuz::API::Common::getAccountList() } > 1) {
+        push @$items, {
 			name => cstring($client, 'PLUGIN_QOBUZ_SELECT_ACCOUNT'),
-			image => __PACKAGE__->_pluginDataFor('icon'),
+            image => __PACKAGE__->_pluginDataFor('icon'),
 			url => \&QobuzSelectAccount,
-		};
-	}
+        };
+    }
 
-	$cb->({ items => $items });
+    $cb->({ items => $items });
 }
 
 sub QobuzSelectAccount {
@@ -1026,70 +1054,233 @@ sub QobuzDeleteFavorite {
 }
 
 sub QobuzUserPlaylists {
-	my ($client, $cb, $params, $args) = @_;
 
-	getAPIHandler($client)->getUserPlaylists(sub {
-		_playlistCallback(shift, $cb, undef, $params->{isWeb});
-	});
+    my ($client, $cb, $params, $args) = @_;
+
+    $params ||= {};
+    $args   ||= {};
+
+    if (Plugins::DPLLauncher::QobuzDiscovery::enabled($client)) {
+
+        return Plugins::DPLLauncher::QobuzDiscovery::userPlaylists(
+            $client,
+            $cb,
+            $params,
+            $args
+        );
+    }
+
+    my $api = getAPIHandler($client);
+    my $account_id = $api->userId;
+
+    getAPIHandler($client)->getUserPlaylists(sub {
+		_playlistCallback($client, shift, $cb, undef, $params->{isWeb}, $args->{active_user}, $account_id);
+    });
 }
 
 sub QobuzPublicPlaylists {
-	my ($client, $cb, $params, $args) = @_;
+    my ($client, $cb, $params, $args) = @_;
 
-	my $genreId = $args->{genreId};
-	my $tags    = $args->{tags};
-	my $type    = $args->{type} || 'editor-picks';
+    my $genreId = $args->{genreId};
+    my $tags    = $args->{tags};
+    my $type    = $args->{type} || 'editor-picks';
 	my $api     = getAPIHandler($client);
 
-	if ($type eq 'editor-picks' && !$genreId && !$tags) {
-		$api->getTags(sub {
-			my $tags = shift;
+	my $account_id = $api->userId;
 
-			if ($tags && ref $tags) {
-				my $lang = lc(preferences('server')->get('language'));
+    if ($type eq 'editor-picks' && !$genreId && !$tags) {
+        $api->getTags(sub {
+            my $tags = shift;
 
-				my @items = map {
-					{
-						name => $_->{name}->{$lang} || $_->{name}->{en},
-						url  => \&QobuzPublicPlaylists,
-						passthrough => [{
+            if ($tags && ref $tags) {
+                my $lang = lc(preferences('server')->get('language'));
+
+                my @items = map {
+                    {
+                        name => $_->{name}->{$lang} || $_->{name}->{en},
+                        url  => \&QobuzPublicPlaylists,
+                        passthrough => [{
 							tags => $_->{id},
-							type => $type
+							type => $type,
+							active_user => $args->{active_user},
 						}]
-					};
-				} @$tags;
+                    };
+                } @$tags;
 
 				$cb->( {
-					items => \@items
+                    items => \@items
 				} );
-			}
-			else {
-				$api->getPublicPlaylists(sub {
-					_playlistCallback(shift, $cb, 'showOwner', $params->{isWeb});
-				}, $type);
-			}
-		});
-	}
-	else {
-		$api->getPublicPlaylists(sub {
-			_playlistCallback(shift, $cb, 'showOwner', $params->{isWeb});
-		}, $type, $genreId, $tags);
-	}
+            }
+            else {
+                $api->getPublicPlaylists(sub {
+					_playlistCallback($client, shift, $cb, 'showOwner', $params->{isWeb}, $args->{active_user}, $account_id);
+                }, $type);
+            }
+        });
+    }
+    else {
+        $api->getPublicPlaylists(sub {
+			_playlistCallback($client, shift, $cb, 'showOwner', $params->{isWeb}, $args->{active_user}, $account_id	);
+        }, $type, $genreId, $tags);
+    }
 }
 
 sub _playlistCallback {
-	my ($searchResult, $cb, $showOwner, $isWeb) = @_;
+    my (
+        $client,
+        $searchResult,
+        $cb,
+        $showOwner,
+        $isWeb,
+        $activeUser,
+        $account_id
+    ) = @_;
 
-	my $playlists = [];
+    my $playlists = [];
 
-	for my $playlist ( @{$searchResult->{playlists}->{items}} ) {
-		next if defined $playlist->{tracks_count} && !$playlist->{tracks_count};
-		push @$playlists, _playlistItem($playlist, $showOwner, $isWeb);
-	}
+    my @items =
+        ref($searchResult->{playlists}) eq 'HASH' &&
+        ref($searchResult->{playlists}->{items}) eq 'ARRAY'
+            ? @{$searchResult->{playlists}->{items}}
+            : ();
 
-	$cb->( {
-		items => $playlists
-	} );
+    #
+    # On ne conserve que les playlists non vides.
+    #
+    @items = grep {
+        !defined($_->{tracks_count})
+        || $_->{tracks_count}
+    } @items;
+
+    #
+    # ------------------------------------------------------------
+    # Récupération des statistiques et détermination du statut
+    # "découverte".
+    # ------------------------------------------------------------
+    #
+    # playlistStats() est appelé une seule fois par playlist.
+    #
+    # On mémorise :
+    # - la playlist ;
+    # - les statistiques éventuellement retournées ;
+    # - le statut "découverte" ;
+    # - l'ordre original Qobuz.
+    #
+    # Cela permet ensuite de trier les playlists sans refaire
+    # d'appel à playlistStats().
+    #
+
+    my @playlist_data;
+
+    my $collectStats;
+
+    $collectStats = sub {
+        my ($index) = @_;
+
+        #
+        # Toutes les playlists ont été traitées.
+        #
+        if ($index >= @items) {
+
+            #
+            # Les playlists découvertes passent devant les autres.
+            #
+            # À égalité, on conserve strictement l'ordre Qobuz
+            # original grâce à original_index.
+            #
+            @playlist_data =
+                sort {
+                    ($b->{discovered} // 0)
+                        <=>
+                    ($a->{discovered} // 0)
+
+                    ||
+
+                    $a->{original_index}
+                        <=>
+                    $b->{original_index}
+                }
+                @playlist_data;
+
+            #
+            # Construction finale des items.
+            #
+            for my $data (@playlist_data) {
+
+                my $playlist =
+                    $data->{playlist};
+
+                my $stats =
+                    $data->{stats};
+
+                my $visible =
+                    $stats
+                        ? $stats->{visible}
+                        : undef;
+
+                my $total =
+                    $stats
+                        ? $stats->{total}
+                        : undef;
+
+                push @$playlists,
+                    _playlistItem(
+                        $playlist,
+                        $showOwner,
+                        $isWeb,
+                        $activeUser,
+                        $visible,
+                        $total,
+                    );
+            }
+
+            return $cb->({
+                items => $playlists
+            });
+        }
+
+        my $playlist =
+            $items[$index];
+
+        #
+        # Un seul appel à playlistStats() pour cette playlist.
+        #
+        Plugins::DPLLauncher::QobuzDiscovery::playlistStats(
+            $client,
+            $account_id,
+            $playlist->{id},
+            $activeUser,
+            sub {
+                my ($stats) = @_;
+
+                push @playlist_data, {
+
+                    playlist =>
+                        $playlist,
+
+                    stats =>
+                        $stats,
+
+                    #
+                    # playlistStats() retourne des statistiques
+                    # uniquement si la playlist est présente dans
+                    # dpllauncher_qobuz_playlists_discovered.
+                    #
+                    discovered =>
+                        $stats ? 1 : 0,
+
+                    original_index =>
+                        $index,
+                };
+
+                $collectStats->(
+                    $index + 1
+                );
+            }
+        );
+    };
+
+    $collectStats->(0);
 }
 
 # sub infoSamplerate {
@@ -1596,27 +1787,87 @@ sub QobuzWorkGetTracks {
 }
 
 sub QobuzPlaylistGetTracks {
-	my ($client, $cb, $params, $args) = @_;
-	my $playlistId = $args->{playlist_id};
+    my ($client, $cb, $params, $args) = @_;
 
-	getAPIHandler($client)->getPlaylistTracks(sub {
-		my $playlist = shift;
+    if (
+        Plugins::DPLLauncher::QobuzDiscovery::enabled($client)
+    ) {
 
-		if (!$playlist) {
-			$log->error("Get playlist ($playlistId) failed");
-			return;
-		}
+        return
+            Plugins::DPLLauncher::QobuzDiscovery::playlistTracks(
+                $client,
+                $cb,
+                $params,
+                $args
+            );
+    }
 
-		my $tracks = [];
+    my $playlistId = $args->{playlist_id};
+    my $activeUser  = $args->{active_user};
 
-		foreach my $track (@{$playlist->{tracks}->{items}}) {
-			push @$tracks, _trackItem($client, $track, $params->{isWeb});
-		}
+    getAPIHandler($client)->getPlaylistTracks(sub {
+        my $playlist = shift;
 
-		$cb->({
-			items => $tracks,
-		}, @_ );
-	}, $playlistId);
+        if (!$playlist) {
+            $log->error("Get playlist ($playlistId) failed");
+            return;
+        }
+
+        my $tracks = [];
+
+        #
+        # Récupérer les IDs Qobuz de la playlist.
+        #
+        my @track_ids =
+            map  { $_->{id} }
+            grep {
+                ref($_) eq 'HASH'
+                && defined $_->{id}
+                && length $_->{id}
+            } @{$playlist->{tracks}->{items}};
+
+        #
+        # Les morceaux ayant un rating manuel de 0.5 sont des DISLIKE.
+        #
+        # Ils peuvent ne pas être matérialisés dans la table tracks :
+        # on travaille donc directement avec leur identité Qobuz.
+        #
+        my $disliked =
+            Plugins::DPLLauncher::QobuzDiscovery::_getManualRatedTrackIds(
+                $client,
+                \@track_ids,
+                $activeUser
+            );
+
+        foreach my $track (@{$playlist->{tracks}->{items}}) {
+
+            my $item =
+                _trackItem(
+                    $client,
+                    $track,
+                    $params->{isWeb}
+                );
+
+            #
+            # Discovery OFF :
+            # les DISLIKE restent visibles, mais sont signalés.
+            #
+            if (
+                ref($disliked) eq 'HASH'
+                && defined $track->{id}
+                && exists $disliked->{$track->{id}}
+            ) {
+				$item->{name}  .= ' 👎';
+				$item->{line1} .= ' 👎';
+            }
+
+            push @$tracks, $item;
+        }
+
+        $cb->({
+            items => $tracks,
+        }, @_ );
+    }, $playlistId);
 }
 
 sub _albumItem {
@@ -1694,22 +1945,47 @@ sub _artistItem {
 }
 
 sub _playlistItem {
-	my ($playlist, $showOwner, $isWeb) = @_;
+    my (
+        $playlist,
+        $showOwner,
+        $isWeb,
+        $activeUser,
+        $visible,
+        $total
+    ) = @_;
 
-	my $image = Plugins::Qobuz::API::Common->getPlaylistImage($playlist);
+    my $image =
+        Plugins::Qobuz::API::Common->getPlaylistImage($playlist);
 
-	my $owner = $showOwner ? $playlist->{owner}->{name} : undef;
+    my $owner =
+        $showOwner
+            ? $playlist->{owner}->{name}
+            : undef;
 
-	return {
-		name  => $playlist->{name} . ($isWeb && $owner ? " - $owner" : ''),
-		name2 => $owner,
-		url   => \&QobuzPlaylistGetTracks,
-		image => $image,
-		passthrough => [{
-			playlist_id  => $playlist->{id},
-		}],
-		type  => 'playlist',
-	};
+    my $name =
+        $playlist->{name};
+
+	if (
+        defined $visible &&
+        defined $total
+    ) {
+        $name .= " ($visible/$total)";
+    }
+
+    $name .= " - $owner"
+        if $isWeb && $owner;
+
+    return {
+        name  => $name,
+        name2 => $owner,
+        url   => \&QobuzPlaylistGetTracks,
+        image => $image,
+        passthrough => [{
+            playlist_id => $playlist->{id},
+            active_user  => $activeUser,
+        }],
+        type => 'playlist',
+    };
 }
 
 sub _trackItem {
@@ -2438,4 +2714,46 @@ sub getAPIHandler {
 	return $api;
 }
 
+sub _discoveryCLI {
+    my $request = shift;
+    my $client  = $request->client;
+
+    if (defined $request->getParam('discoveryMenu')) {
+
+        my $enabled =
+            Plugins::DPLLauncher::QobuzDiscovery::enabled($client);
+
+        my $items = [{
+            text => $enabled
+                ? 'Désactiver le mode découverte'
+                : 'Activer le mode découverte',
+
+            actions => {
+                go => {
+                    player => 0,
+                    cmd => ['qobuz', 'discovery'],
+                    params => {
+                        toggle => 1,
+                    },
+                },
+            },
+
+            nextWindow => 'parent',
+        }];
+
+        $request->addResult('offset', 0);
+        $request->addResult('count', scalar @$items);
+        $request->addResult('item_loop', $items);
+
+    } elsif (defined $request->getParam('toggle')) {
+
+        Plugins::DPLLauncher::QobuzDiscovery::toggle($client);
+    }
+    else {
+        $request->setStatusBadParams();
+        return;
+    }
+
+    $request->setStatusDone();
+}
 1;

@@ -8,8 +8,8 @@
       <category>musicservices</category>
       <sha>586b6517e53a673610367252dd15201772ea1bf9</sha>
       <desc lang="EN">Stream Qobuz to your Squeezebox.</desc>
-      <icon>https://raw.githubusercontent.com/LMS-Community/plugin-Qobuz/master/HTML/EN/plugins/Qobuz/html/images/icon.png</icon>
-      <link>https://github.com/LMS-Community/plugin-Qobuz</link>
+      <icon>https://raw.githubusercontent.com/wawa79/plugin-Qobuz/qobuz-3.7.4-patches/HTML/EN/plugins/Qobuz/html/images/icon.png</icon>
+      <link>https://github.com/wawa79/plugin-Qobuz</link>
     </plugin>
   </plugins>
 </extensions>
